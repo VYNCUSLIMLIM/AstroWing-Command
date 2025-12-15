@@ -6,6 +6,7 @@
     <title>AstroWing Command</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet">
+    <script src="https://webgazer.cs.brown.edu/webgazer.js" defer></script>
     <style>
       body {
         font-family: 'Rajdhani', sans-serif;
@@ -48,15 +49,42 @@
         50% { transform: translateY(-10px); }
         100% { transform: translateY(0px); }
       }
+      
+      /* WebGazer Video Feed Styling */
+      #webgazerVideoFeed {
+        position: fixed !important;
+        bottom: 20px !important;
+        left: 20px !important;
+        top: auto !important;
+        width: 160px !important;
+        height: auto !important;
+        border: 2px solid #0ea5e9;
+        border-radius: 8px;
+        opacity: 0.8;
+        z-index: 100;
+        filter: sepia(100%) hue-rotate(180deg) saturate(200%); /* Sci-fi blue tint */
+      }
+      #webgazerFaceOverlay {
+        position: fixed !important;
+        bottom: 20px !important;
+        left: 20px !important;
+        top: auto !important;
+        width: 160px !important;
+        height: auto !important;
+        z-index: 101;
+      }
+      #webgazerFaceFeedbackBox {
+        border-color: #0ea5e9 !important;
+      }
     </style>
   <script type="importmap">
 {
   "imports": {
-    "react": "https://esm.sh/react@^19.2.3",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
-    "react/": "https://esm.sh/react@^19.2.3/",
-    "@google/genai": "https://esm.sh/@google/genai@^1.33.0",
-    "lucide-react": "https://esm.sh/lucide-react@^0.561.0"
+    "react": "https://esm.sh/react@18.3.1",
+    "react-dom/": "https://esm.sh/react-dom@18.3.1/",
+    "react/": "https://esm.sh/react@18.3.1/",
+    "@google/genai": "https://esm.sh/@google/genai@0.0.12",
+    "lucide-react": "https://esm.sh/lucide-react@0.263.1"
   }
 }
 </script>

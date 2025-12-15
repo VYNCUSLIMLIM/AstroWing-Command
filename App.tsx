@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { GameCanvas, GameCanvasHandle } from './components/GameCanvas';
 import { generateBriefing, generateTacticalUpdate, generateDebrief } from './services/geminiService';
 import { GameState, GameStats, MissionLog } from './types';
-import { Monitor, Shield, Target, Award, Play, RotateCcw, AlertTriangle, ShoppingCart, Zap, Plus, Hammer, Pause } from 'lucide-react';
+import { Monitor, Shield, Target, Award, Play, RotateCcw, AlertTriangle, ShoppingCart, Zap, Plus, Hammer, Pause, Eye } from 'lucide-react';
 
 export default function App() {
   const [gameState, setGameState] = useState<GameState>(GameState.MENU);
@@ -12,6 +12,7 @@ export default function App() {
   const [logs, setLogs] = useState<MissionLog[]>([]);
   const [debrief, setDebrief] = useState<{rank: string, message: string} | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [eyeTrackingEnabled, setEyeTrackingEnabled] = useState(false);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const gameCanvasRef = useRef<GameCanvasHandle>(null);
@@ -27,19 +28,29 @@ export default function App() {
   };
 
   const handleGameEvent = async (event: string) => {
-    // Throttled AI calls or specific events
-    if (event === 'HULL_DAMAGE' && Math.random() > 0.7) {
+    // Priority Events
+    if (event === 'ENEMY_SPAWN_GUARDIAN') {
+         addLog('SYSTEM', 'WARNING: Heavily Armored Hostile Detected.', 'high');
+         const msg = await generateTacticalUpdate('Guardian Class Enemy detected', stats.score);
+         addLog('AI', msg, 'high');
+    }
+    else if (event === 'ENEMY_SPAWN_MINELAYER') {
+         addLog('SYSTEM', 'CAUTION: Area Denial Units in sector.', 'normal');
+    }
+
+    // Throttled / Probability Events
+    else if (event === 'HULL_DAMAGE' && Math.random() > 0.7) {
         const msg = await generateTacticalUpdate('Hull Critical', stats.score);
         addLog('AI', msg, 'high');
     }
-    if (event === 'WAVE_CLEARED') {
+    else if (event === 'WAVE_CLEARED') {
         const msg = await generateTacticalUpdate('Wave Cleared', stats.score);
         addLog('AI', msg, 'normal');
     }
-    if (event === 'WEAPON_UPGRADED') {
+    else if (event === 'WEAPON_UPGRADED') {
         addLog('SYSTEM', 'Weapon systems upgraded.', 'high');
     }
-    if (event === 'REPAIR_COMPLETE') {
+    else if (event === 'REPAIR_COMPLETE') {
         addLog('SYSTEM', 'Hull repair completed.', 'normal');
     }
   };
@@ -216,6 +227,7 @@ export default function App() {
                     if(gameState === GameState.GAME_OVER && stats.score !== newStats.score) handleGameOver(newStats);
                 }} 
                 onEvent={handleGameEvent}
+                eyeTrackingEnabled={eyeTrackingEnabled}
             />
             
             {/* Start Screen Overlay */}
@@ -226,16 +238,28 @@ export default function App() {
                             ASTROWING
                         </h1>
                         <p className="text-cyan-200/60 tracking-[0.3em] text-sm">ADVANCED TACTICAL SIMULATOR</p>
-                        <button 
-                            onClick={startGame}
-                            disabled={isLoading}
-                            className="group relative px-8 py-3 bg-cyan-600 hover:bg-cyan-500 text-white font-bold tracking-widest transition-all clip-path-polygon"
-                        >
-                            <span className="relative z-10 flex items-center gap-2">
-                                {isLoading ? 'INITIALIZING...' : 'ENGAGE SYSTEM'} <Play size={16} fill="currentColor"/>
-                            </span>
-                            <div className="absolute inset-0 bg-white/20 scale-x-0 group-hover:scale-x-100 transition-transform origin-left"/>
-                        </button>
+                        
+                        <div className="flex flex-col gap-4 items-center">
+                            <button 
+                                onClick={startGame}
+                                disabled={isLoading}
+                                className="group relative px-8 py-3 bg-cyan-600 hover:bg-cyan-500 text-white font-bold tracking-widest transition-all clip-path-polygon min-w-[250px]"
+                            >
+                                <span className="relative z-10 flex items-center justify-center gap-2">
+                                    {isLoading ? 'INITIALIZING...' : 'ENGAGE SYSTEM'} <Play size={16} fill="currentColor"/>
+                                </span>
+                                <div className="absolute inset-0 bg-white/20 scale-x-0 group-hover:scale-x-100 transition-transform origin-left"/>
+                            </button>
+                            
+                            <button 
+                                onClick={() => setEyeTrackingEnabled(!eyeTrackingEnabled)}
+                                className={`group relative px-6 py-2 border ${eyeTrackingEnabled ? 'border-green-500 bg-green-500/10 text-green-400' : 'border-slate-700 bg-slate-800/50 text-slate-400'} font-bold tracking-wider transition-all min-w-[250px] text-xs`}
+                            >
+                                <span className="relative z-10 flex items-center justify-center gap-2">
+                                    <Eye size={14}/> EYE TRACKING: {eyeTrackingEnabled ? 'ONLINE' : 'OFFLINE'}
+                                </span>
+                            </button>
+                        </div>
                     </div>
                 </div>
             )}
@@ -369,7 +393,7 @@ export default function App() {
       
       {/* Footer Instructions */}
       <div className="fixed bottom-4 text-center w-full text-slate-500 text-xs font-mono pointer-events-none">
-          CONTROLS: MOUSE TO MOVE • [B] ARMORY • [P] PAUSE
+          CONTROLS: MOUSE TO MOVE • [B] ARMORY • [P] PAUSE • {eyeTrackingEnabled ? 'EYE TRACKING ON' : 'EYE TRACKING OFF'}
       </div>
 
     </div>

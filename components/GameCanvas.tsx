@@ -6,6 +6,7 @@ interface GameCanvasProps {
   setGameState: (state: GameState) => void;
   onStatsUpdate: (stats: GameStats) => void;
   onEvent: (event: string) => void;
+  eyeTrackingEnabled: boolean;
 }
 
 export interface GameCanvasHandle {
@@ -20,12 +21,15 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
   gameState, 
   setGameState, 
   onStatsUpdate,
-  onEvent
+  onEvent,
+  eyeTrackingEnabled
 }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const requestRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number>(0);
+  const gameTimeRef = useRef<number>(0); // Track logic time separately from wall clock
   const spawnTimerRef = useRef<number>(0);
+  const inputModeRef = useRef<'MOUSE' | 'KEYBOARD' | 'EYE'>('MOUSE');
   
   // Game Entities Ref (Mutable state for performance)
   const gameRef = useRef<{
@@ -38,6 +42,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
     keys: { [key: string]: boolean };
     mousePos: { x: number; y: number };
     shake: number;
+    gazePos: { x: number; y: number } | null;
   }>({
     player: {
       id: 'p1', pos: { x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT - 100 }, vel: { x: 0, y: 0 },
@@ -52,7 +57,8 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
     stats: { score: 0, credits: 0, wave: 1, enemiesDestroyed: 0, accuracy: 0, shotsFired: 0, shotsHit: 0, timeSurvived: 0, weaponLevel: 1 },
     keys: {},
     mousePos: { x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT - 100 },
-    shake: 0
+    shake: 0,
+    gazePos: null
   });
 
   // Expose methods to parent
@@ -83,14 +89,71 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
     }
   }));
 
+  // Initialize WebGazer
+  useEffect(() => {
+    const startWebGazer = async () => {
+        if (eyeTrackingEnabled && (window as any).webgazer) {
+            const webgazer = (window as any).webgazer;
+            
+            // Clear any previous listeners
+            webgazer.clearGazeListener();
+            
+            webgazer.setGazeListener((data: any, clock: any) => {
+                if (data && canvasRef.current) {
+                    const rect = canvasRef.current.getBoundingClientRect();
+                    const scaleX = CANVAS_WIDTH / rect.width;
+                    const scaleY = CANVAS_HEIGHT / rect.height;
+                    
+                    const gazeX = (data.x - rect.left) * scaleX;
+                    const gazeY = (data.y - rect.top) * scaleY;
+                    
+                    // Store raw gaze for debugging/visuals
+                    gameRef.current.gazePos = { x: gazeX, y: gazeY };
+                    
+                    // Directly update target position for smooth lerp in update loop
+                    gameRef.current.mousePos = { x: gazeX, y: gazeY };
+                    inputModeRef.current = 'EYE';
+                }
+            }).begin();
+
+            webgazer.showVideo(true);
+            webgazer.showFaceOverlay(true);
+            webgazer.showFaceFeedbackBox(true);
+        }
+    };
+
+    const stopWebGazer = () => {
+        if ((window as any).webgazer) {
+            const webgazer = (window as any).webgazer;
+            webgazer.end();
+            webgazer.showVideo(false);
+            webgazer.showFaceOverlay(false);
+            webgazer.showFaceFeedbackBox(false);
+            // Manually hide video if webgazer doesn't cleanup properly
+            const videoEl = document.getElementById('webgazerVideoFeed');
+            if (videoEl) videoEl.style.display = 'none';
+        }
+    };
+
+    if (eyeTrackingEnabled) {
+        startWebGazer();
+    } else {
+        stopWebGazer();
+    }
+
+    return () => {
+        stopWebGazer();
+    };
+  }, [eyeTrackingEnabled]);
+
   // Reset Game
   const resetGame = useCallback(() => {
-    const now = performance.now();
+    gameTimeRef.current = 0;
     gameRef.current.player = {
       id: 'p1', pos: { x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT - 100 }, vel: { x: 0, y: 0 },
       width: 40, height: 40, color: '#0ea5e9', active: true,
       hp: 100, maxHp: 100, shield: 50, maxShield: 50, fireRate: 150, lastFired: 0,
-      weaponLevel: 1, speedMultiplier: 1, invulnerableUntil: now + 3000 // 3 seconds invulnerability
+      weaponLevel: 1, speedMultiplier: 1, invulnerableUntil: 3000 // 3 seconds invulnerability
     };
     gameRef.current.enemies = [];
     gameRef.current.projectiles = [];
@@ -98,7 +161,8 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
     gameRef.current.powerups = [];
     gameRef.current.stats = { score: 0, credits: 0, wave: 1, enemiesDestroyed: 0, accuracy: 0, shotsFired: 0, shotsHit: 0, timeSurvived: 0, weaponLevel: 1 };
     gameRef.current.shake = 0;
-    lastTimeRef.current = now;
+    spawnTimerRef.current = 0;
+    lastTimeRef.current = performance.now();
   }, []);
 
   useEffect(() => {
@@ -110,10 +174,17 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
 
   // Input Handling
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => { gameRef.current.keys[e.code] = true; };
+    const handleKeyDown = (e: KeyboardEvent) => { 
+        gameRef.current.keys[e.code] = true; 
+        if (['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowLeft','ArrowDown','ArrowRight'].includes(e.code)) {
+            inputModeRef.current = 'KEYBOARD';
+        }
+    };
     const handleKeyUp = (e: KeyboardEvent) => { gameRef.current.keys[e.code] = false; };
     const handleMouseMove = (e: MouseEvent) => {
-      if (!canvasRef.current) return;
+      if (!canvasRef.current || eyeTrackingEnabled) return; // Ignore mouse if eye tracking is on
+      
+      inputModeRef.current = 'MOUSE';
       const rect = canvasRef.current.getBoundingClientRect();
       const scaleX = CANVAS_WIDTH / rect.width;
       const scaleY = CANVAS_HEIGHT / rect.height;
@@ -132,14 +203,18 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
       window.removeEventListener('keyup', handleKeyUp);
       window.removeEventListener('mousemove', handleMouseMove);
     };
-  }, []);
+  }, [eyeTrackingEnabled]);
 
   // Update Loop
-  const update = useCallback((deltaTime: number, time: number) => {
+  const update = useCallback((deltaTime: number) => {
     const state = gameRef.current;
     
     // Halt logic if paused
     if (gameState !== GameState.PLAYING) return;
+
+    // Advance Game Time
+    gameTimeRef.current += deltaTime;
+    const time = gameTimeRef.current;
 
     state.stats.timeSurvived += deltaTime / 1000;
 
@@ -147,10 +222,33 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
     if (state.shake > 0) state.shake *= 0.9;
     if (state.shake < 0.5) state.shake = 0;
 
-    // Player Movement (Mouse) - Responsive lerp
-    const lerpFactor = 0.25 * state.player.speedMultiplier;
-    state.player.pos.x += (state.mousePos.x - state.player.pos.x) * lerpFactor;
-    state.player.pos.y += (state.mousePos.y - state.player.pos.y) * lerpFactor;
+    // Player Movement
+    const speed = 7 * state.player.speedMultiplier; // Base speed
+    
+    if (inputModeRef.current === 'KEYBOARD') {
+        let dx = 0;
+        let dy = 0;
+        if (state.keys['KeyW'] || state.keys['ArrowUp']) dy -= 1;
+        if (state.keys['KeyS'] || state.keys['ArrowDown']) dy += 1;
+        if (state.keys['KeyA'] || state.keys['ArrowLeft']) dx -= 1;
+        if (state.keys['KeyD'] || state.keys['ArrowRight']) dx += 1;
+        
+        // Normalize diagonal
+        if (dx !== 0 && dy !== 0) {
+            const mag = Math.sqrt(dx*dx + dy*dy);
+            dx /= mag;
+            dy /= mag;
+        }
+        
+        state.player.pos.x += dx * speed;
+        state.player.pos.y += dy * speed;
+    } else {
+        // Mouse/Eye Lerp
+        // Increase smoothing (lower lerp) for eye tracking to reduce jitter
+        const lerpFactor = (inputModeRef.current === 'EYE' ? 0.08 : 0.25) * state.player.speedMultiplier;
+        state.player.pos.x += (state.mousePos.x - state.player.pos.x) * lerpFactor;
+        state.player.pos.y += (state.mousePos.y - state.player.pos.y) * lerpFactor;
+    }
 
     // Clamp Player
     state.player.pos.x = Math.max(state.player.width/2, Math.min(CANVAS_WIDTH - state.player.width/2, state.player.pos.x));
@@ -206,13 +304,22 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
       spawnTimerRef.current = time;
       const rand = Math.random();
       let type: Enemy['type'] = 'drone';
-      let hp = 30 + (state.stats.wave * 5); // Scale HP
+      let hp = 30 + (state.stats.wave * 5); 
       let width = 30;
       let color = '#f97316';
       let scoreValue = 100;
+      let shield = 0;
       
       // Enemy Types
-      if (rand > 0.95) { type = 'bomber'; hp = 150 + (state.stats.wave * 10); width = 50; color = '#4c1d95'; scoreValue = 300; }
+      // Minelayer: Wave 2+
+      // Guardian: Wave 3+
+      if (state.stats.wave >= 3 && rand > 0.9) {
+          type = 'guardian'; hp = 200 + (state.stats.wave * 15); width = 45; color = '#3b82f6'; scoreValue = 400; shield = 100;
+          onEvent("ENEMY_SPAWN_GUARDIAN");
+      } else if (state.stats.wave >= 2 && rand > 0.8) {
+          type = 'minelayer'; hp = 100 + (state.stats.wave * 10); width = 50; color = '#fbbf24'; scoreValue = 250;
+          onEvent("ENEMY_SPAWN_MINELAYER");
+      } else if (rand > 0.95) { type = 'bomber'; hp = 150 + (state.stats.wave * 10); width = 50; color = '#4c1d95'; scoreValue = 300; }
       else if (rand > 0.8) { type = 'seeker'; hp = 50 + (state.stats.wave * 5); width = 35; color = '#db2777'; scoreValue = 150; }
       else if (rand > 0.6) { type = 'fighter'; hp = 60 + (state.stats.wave * 5); width = 40; color = '#ef4444'; scoreValue = 200; }
 
@@ -223,15 +330,35 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
         width, height: width, color,
         active: true, hp, type, scoreValue, 
         pattern: Math.floor(Math.random() * 3),
-        lastFired: 0
+        lastFired: 0,
+        shield, maxShield: shield
       });
     }
 
     // Update Projectiles
     state.projectiles.forEach(p => {
+      // Homing Logic for Tracking Projectiles
+      if (p.tracking && p.owner === 'enemy') {
+          const dx = state.player.pos.x - p.pos.x;
+          const dy = state.player.pos.y - p.pos.y;
+          const dist = Math.sqrt(dx*dx + dy*dy);
+          if (dist > 0) {
+              // Steer velocity towards player
+              const speed = 4;
+              p.vel.x = (p.vel.x * 0.95) + ((dx/dist) * speed * 0.05);
+              p.vel.y = (p.vel.y * 0.95) + ((dy/dist) * speed * 0.05);
+          }
+      }
+
+      // Mine Logic (Drift slowly)
+      if (p.isMine) {
+          p.vel.x *= 0.95;
+          p.vel.y = 1; // Slow drift down
+      }
+
       p.pos.x += p.vel.x;
       p.pos.y += p.vel.y;
-      if (p.pos.y < -50 || p.pos.y > CANVAS_HEIGHT + 50) p.active = false;
+      if (p.pos.y < -50 || p.pos.y > CANVAS_HEIGHT + 50 || p.pos.x < -50 || p.pos.x > CANVAS_WIDTH + 50) p.active = false;
     });
 
     // Update Powerups
@@ -263,43 +390,74 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
     });
 
     // Enemy Damage Scaling
-    const enemyDamage = 15 + (state.stats.wave * 2);
+    const enemyDamage = 15 + (state.stats.wave * 3); 
 
     // Update Enemies
     state.enemies.forEach(e => {
       e.pos.x += e.vel.x;
       e.pos.y += e.vel.y;
       
-      // Movement Patterns
+      // Behavior Patterns
       if (e.type === 'seeker') {
-          // Move towards player X
-          if (e.pos.x < state.player.pos.x) e.pos.x += 1 + (state.stats.wave * 0.05);
-          else e.pos.x -= 1 + (state.stats.wave * 0.05);
+          const moveSpeed = 1 + (state.stats.wave * 0.05);
+          if (e.pos.x < state.player.pos.x) e.pos.x += moveSpeed;
+          else e.pos.x -= moveSpeed;
+      } else if (e.type === 'minelayer') {
+          // Move horizontally, stay near top/middle
+          e.vel.y = e.pos.y > 200 ? -0.5 : 0.5;
+          e.vel.x = Math.sin(time * 0.002) * 2;
+      } else if (e.type === 'guardian') {
+          // Slow steady advance
+          e.vel.y = 0.5;
+          e.vel.x = Math.sin(time * 0.001) * 0.5;
       } else if (e.pattern === 1) {
           e.pos.x += Math.sin(time * 0.005) * 2;
       }
 
       // Shooting Logic
-      if ((e.type === 'fighter' || e.type === 'bomber') && e.pos.y > 0 && e.pos.y < CANVAS_HEIGHT - 100) {
-          const fireInterval = e.type === 'bomber' ? 2000 : 1500;
+      if (e.pos.y > 0 && e.pos.y < CANVAS_HEIGHT - 50) {
+          let fireInterval = 2000;
+          if (e.type === 'minelayer') fireInterval = 3000;
+          if (e.type === 'guardian') fireInterval = 2500;
+          
           if (time - (e.lastFired || 0) > fireInterval) {
               e.lastFired = time;
-              state.projectiles.push({
-                  id: `ep_${time}_${e.id}`,
-                  pos: { x: e.pos.x, y: e.pos.y + 20 },
-                  vel: { x: 0, y: 6 },
-                  width: 6, height: 12, color: '#ef4444', active: true,
-                  damage: enemyDamage, owner: 'enemy'
-              });
-              if (e.type === 'bomber') {
-                  // Bomber shoots spread
+              
+              if (e.type === 'minelayer') {
+                  // Drop Mine
                   state.projectiles.push({
-                      id: `ep_${time}_${e.id}_l`, pos: { x: e.pos.x, y: e.pos.y + 20 }, vel: { x: -2, y: 5 }, width: 6, height: 12, color: '#ef4444', active: true, damage: enemyDamage, owner: 'enemy'
+                    id: `ep_mine_${time}_${e.id}`,
+                    pos: { x: e.pos.x, y: e.pos.y + 20 },
+                    vel: { x: 0, y: 0 },
+                    width: 15, height: 15, color: '#fbbf24', active: true,
+                    damage: 40, owner: 'enemy', isMine: true
                   });
-                  state.projectiles.push({
-                      id: `ep_${time}_${e.id}_r`, pos: { x: e.pos.x, y: e.pos.y + 20 }, vel: { x: 2, y: 5 }, width: 6, height: 12, color: '#ef4444', active: true, damage: enemyDamage, owner: 'enemy'
+              } else if (e.type === 'guardian') {
+                   // Fire Tracking Missile
+                   state.projectiles.push({
+                    id: `ep_track_${time}_${e.id}`,
+                    pos: { x: e.pos.x, y: e.pos.y + 20 },
+                    vel: { x: 0, y: 3 },
+                    width: 8, height: 8, color: '#f87171', active: true,
+                    damage: 25, owner: 'enemy', tracking: true
                   });
-              }
+              } else if (e.type === 'fighter' || e.type === 'bomber') {
+                state.projectiles.push({
+                    id: `ep_${time}_${e.id}`,
+                    pos: { x: e.pos.x, y: e.pos.y + 20 },
+                    vel: { x: 0, y: 6 },
+                    width: 6, height: 12, color: '#ef4444', active: true,
+                    damage: enemyDamage, owner: 'enemy'
+                });
+                if (e.type === 'bomber') {
+                    state.projectiles.push({
+                        id: `ep_${time}_${e.id}_l`, pos: { x: e.pos.x, y: e.pos.y + 20 }, vel: { x: -2, y: 5 }, width: 6, height: 12, color: '#ef4444', active: true, damage: enemyDamage, owner: 'enemy'
+                    });
+                    state.projectiles.push({
+                        id: `ep_${time}_${e.id}_r`, pos: { x: e.pos.x, y: e.pos.y + 20 }, vel: { x: 2, y: 5 }, width: 6, height: 12, color: '#ef4444', active: true, damage: enemyDamage, owner: 'enemy'
+                    });
+                }
+             }
           }
       }
 
@@ -307,11 +465,18 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
       if (time > state.player.invulnerableUntil &&
           Math.abs(e.pos.x - state.player.pos.x) < (e.width + state.player.width)/2 &&
           Math.abs(e.pos.y - state.player.pos.y) < (e.height + state.player.height)/2) {
-            e.active = false;
-            createExplosion(e.pos.x, e.pos.y, '#ff0000', 15, true);
             
-            // Shield logic
-            let damageTaken = 25 + (state.stats.wave * 5); // Collision damage scales
+            // Guardian Shield Impact Logic
+            if (e.type === 'guardian' && (e.shield || 0) > 0) {
+                 e.shield = 0; // Destroy shield on impact
+                 createExplosion(e.pos.x, e.pos.y, '#3b82f6', 10, true);
+            } else {
+                 e.active = false;
+                 createExplosion(e.pos.x, e.pos.y, '#ff0000', 15, true);
+            }
+            
+            // Player Damage
+            let damageTaken = 25 + (state.stats.wave * 5); 
             if (state.player.shield > 0) {
                 state.player.shield -= damageTaken;
                 if (state.player.shield < 0) {
@@ -341,9 +506,22 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
             if (!e.active) return;
             if (Math.abs(p.pos.x - e.pos.x) < (p.width + e.width)/2 + 5 &&
                 Math.abs(p.pos.y - e.pos.y) < (p.height + e.height)/2 + 5) {
+                  
                   p.active = false;
-                  e.hp -= p.damage;
-                  createExplosion(p.pos.x, p.pos.y, '#fff', 3, false);
+
+                  // Hit Shield First
+                  if ((e.shield || 0) > 0) {
+                      e.shield! -= p.damage;
+                      createExplosion(p.pos.x, p.pos.y, '#60a5fa', 2, false); // Shield Spark
+                      if (e.shield! < 0) {
+                          e.hp += e.shield!; // Overflow to Hull
+                          e.shield = 0;
+                      }
+                  } else {
+                      e.hp -= p.damage;
+                      createExplosion(p.pos.x, p.pos.y, '#fff', 3, false);
+                  }
+
                   if (e.hp <= 0) {
                     e.active = false;
                     createExplosion(e.pos.x, e.pos.y, e.color, e.type === 'bomber' ? 30 : 15, e.type === 'bomber');
@@ -352,7 +530,6 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
                     state.stats.enemiesDestroyed++;
                     state.stats.shotsHit++;
                     
-                    // Spawn Powerup Chance
                     if (Math.random() < 0.1) {
                         const puType = Math.random() < 0.4 ? 'SHIELD' : (Math.random() < 0.7 ? 'SPEED' : 'WEAPON');
                         state.powerups.push({
@@ -449,11 +626,14 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
   };
 
   // Draw Loop
-  const draw = useCallback((time: number) => {
+  const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    
+    // Use the frozen game time if paused, otherwise current game time
+    const time = gameTimeRef.current;
 
     // Draw frame
     ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
@@ -506,17 +686,35 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
         // Invulnerability Flashing
         if (time < state.player.invulnerableUntil) {
              const flash = Math.floor(time / 100) % 2 === 0;
-             ctx.globalAlpha = flash ? 0.4 : 1.0;
+             ctx.globalAlpha = flash ? 0.3 : 0.8;
+             // White Overlay for flash
+             if (flash) {
+                 ctx.fillStyle = '#ffffff';
+                 ctx.beginPath();
+                 ctx.arc(0, 0, 25, 0, Math.PI * 2);
+                 ctx.fill();
+             }
         }
 
-        // Shield Visual (Aura)
+        // Shield Visual (Aura) - Pulsating
         if (state.player.shield > 0) {
             ctx.beginPath();
-            ctx.arc(0, 0, 32 + Math.sin(time * 0.01) * 2, 0, Math.PI * 2);
-            ctx.strokeStyle = `rgba(56, 189, 248, ${state.player.shield / state.player.maxShield})`;
-            ctx.lineWidth = 2 + Math.sin(time * 0.01) * 1;
+            // Vary size and opacity based on shield strength and sine wave
+            const pulse = Math.sin(time * 0.01);
+            const intensity = state.player.shield / state.player.maxShield;
+            
+            ctx.arc(0, 0, 32 + pulse * 3, 0, Math.PI * 2);
+            ctx.strokeStyle = `rgba(56, 189, 248, ${0.4 * intensity + 0.2 + pulse * 0.1})`;
+            ctx.lineWidth = 2 + pulse * 1;
             ctx.stroke();
-            ctx.shadowBlur = 10;
+            
+            // Inner Shield
+            ctx.beginPath();
+            ctx.arc(0, 0, 25, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(56, 189, 248, ${0.1 * intensity})`;
+            ctx.fill();
+            
+            ctx.shadowBlur = 15 * intensity;
             ctx.shadowColor = '#38bdf8';
         }
 
@@ -554,6 +752,35 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
             ctx.fillRect(22, 10, 3, 10);
         }
         
+        // Tracking Projectile Warning (HUD Reticle)
+        const incomingMissiles = state.projectiles.filter(p => p.tracking && p.owner === 'enemy');
+        incomingMissiles.forEach(missile => {
+            const dx = missile.pos.x - state.player.pos.x;
+            const dy = missile.pos.y - state.player.pos.y;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            
+            if (dist < 200) {
+                 ctx.save();
+                 ctx.rotate(Math.atan2(dy, dx));
+                 ctx.translate(40, 0); // Offset from player center
+                 ctx.fillStyle = '#ef4444';
+                 ctx.beginPath();
+                 ctx.moveTo(0, 0);
+                 ctx.lineTo(10, -5);
+                 ctx.lineTo(10, 5);
+                 ctx.fill();
+                 ctx.restore();
+            }
+        });
+
+        // Show "LOCKED" warning if seeker nearby
+        const lockingEnemy = state.enemies.find(e => e.type === 'seeker');
+        if (lockingEnemy) {
+            ctx.fillStyle = '#ef4444';
+            ctx.font = '10px monospace';
+            ctx.fillText('! WARNING !', 0, -35);
+        }
+
         ctx.globalAlpha = 1.0; // Reset Alpha
         ctx.restore();
     }
@@ -566,29 +793,19 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
       // Homing/Targeting Indicator for Seekers
       if (e.type === 'seeker') {
           ctx.save();
-          ctx.strokeStyle = 'rgba(239, 68, 68, 0.4)'; // Red faint line
+          ctx.strokeStyle = 'rgba(239, 68, 68, 0.4)';
           ctx.lineWidth = 1;
           ctx.setLineDash([5, 5]);
           ctx.beginPath();
           ctx.moveTo(0, 0);
-          // Draw line to player relative to enemy pos
           ctx.lineTo(state.player.pos.x - e.pos.x, state.player.pos.y - e.pos.y);
-          ctx.stroke();
-          
-          // Rotating reticle around enemy
-          ctx.rotate(time * 0.005);
-          ctx.strokeStyle = '#db2777';
-          ctx.lineWidth = 2;
-          ctx.setLineDash([]);
-          ctx.beginPath();
-          ctx.arc(0, 0, 25, 0, Math.PI * 1.5); // Broken circle
           ctx.stroke();
           ctx.restore();
       }
 
-      ctx.fillStyle = e.color;
       ctx.shadowBlur = 10;
       ctx.shadowColor = e.color;
+      ctx.fillStyle = e.color;
       
       if (e.type === 'drone') {
           ctx.beginPath();
@@ -604,6 +821,33 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
           ctx.lineTo(0, -5);
           ctx.lineTo(-8, -8);
           ctx.closePath();
+          ctx.fill();
+      } else if (e.type === 'minelayer') {
+          // Bulky Hexagon
+          ctx.beginPath();
+          for(let i=0; i<6; i++) {
+              const angle = (i * Math.PI) / 3;
+              const r = 25;
+              ctx.lineTo(Math.cos(angle)*r, Math.sin(angle)*r);
+          }
+          ctx.closePath();
+          ctx.fill();
+          // Stripe
+          ctx.fillStyle = '#000';
+          ctx.fillRect(-20, -5, 40, 10);
+      } else if (e.type === 'guardian') {
+          // Shield Ring
+          if ((e.shield || 0) > 0) {
+              ctx.strokeStyle = '#60a5fa';
+              ctx.lineWidth = 3;
+              ctx.beginPath();
+              ctx.arc(0, 0, 30, 0, Math.PI*2);
+              ctx.stroke();
+          }
+          // Core
+          ctx.fillStyle = e.color;
+          ctx.beginPath();
+          ctx.arc(0, 0, 20, 0, Math.PI*2);
           ctx.fill();
       } else {
           // Fighter/Bomber
@@ -630,7 +874,31 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
       ctx.fillStyle = p.color;
       ctx.shadowBlur = 5;
       ctx.shadowColor = p.color;
-      ctx.fillRect(p.pos.x - p.width/2, p.pos.y - p.height/2, p.width, p.height);
+      
+      if (p.isMine) {
+          // Spiky Mine
+          ctx.beginPath();
+          ctx.arc(p.pos.x, p.pos.y, 8, 0, Math.PI*2);
+          ctx.fill();
+          // Spikes
+          if (Math.floor(time/200) % 2 === 0) { // Blink
+              ctx.strokeStyle = '#ef4444';
+              ctx.stroke();
+          }
+      } else if (p.tracking) {
+          // Diamond shape for missiles
+          ctx.save();
+          ctx.translate(p.pos.x, p.pos.y);
+          ctx.rotate(Math.atan2(p.vel.y, p.vel.x));
+          ctx.beginPath();
+          ctx.moveTo(5, 0);
+          ctx.lineTo(-5, 3);
+          ctx.lineTo(-5, -3);
+          ctx.fill();
+          ctx.restore();
+      } else {
+          ctx.fillRect(p.pos.x - p.width/2, p.pos.y - p.height/2, p.width, p.height);
+      }
     });
 
     // Draw Particles
@@ -643,16 +911,29 @@ export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
       ctx.globalAlpha = 1;
     });
 
+    // Draw Gaze Debug Point
+    if (eyeTrackingEnabled && state.gazePos) {
+        ctx.save();
+        ctx.fillStyle = 'rgba(239, 68, 68, 0.5)';
+        ctx.beginPath();
+        ctx.arc(state.gazePos.x, state.gazePos.y, 10, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#ef4444';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.restore();
+    }
+
     ctx.restore(); // Restore shake
 
-  }, [gameState]);
+  }, [gameState, eyeTrackingEnabled]);
 
   const loop = useCallback((time: number) => {
     const deltaTime = time - lastTimeRef.current;
     lastTimeRef.current = time;
 
-    update(deltaTime, time);
-    draw(time);
+    update(deltaTime);
+    draw();
     
     requestRef.current = requestAnimationFrame(loop);
   }, [update, draw]);
